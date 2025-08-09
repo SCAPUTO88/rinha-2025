@@ -1,9 +1,12 @@
 package scaputo88.com.example.rinha_25.service;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import scaputo88.com.example.rinha_25.model.Payment;
+import scaputo88.com.example.rinha_25.model.PaymentEntity;
 import scaputo88.com.example.rinha_25.model.PaymentSummaryData;
 import scaputo88.com.example.rinha_25.model.ProcessorType;
+import scaputo88.com.example.rinha_25.repository.PaymentRepository;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -19,14 +22,27 @@ public class PaymentService {
 
     private final ProcessorClient processorClient;
     private final HealthCheckService healthCheckService;
-    private final Map<UUID, Payment> store = new ConcurrentHashMap<>();
+    private final PaymentQueue paymentQueue;
+    private final MetricsService metrics;
+    private final PaymentRepository paymentRepository;
 
+
+    private final Map<UUID, Payment> store = new ConcurrentHashMap<>();
     private final Map<ProcessorType, AtomicLong> totalRequests = new EnumMap<>(ProcessorType.class);
     private final Map<ProcessorType, AtomicReference<BigDecimal>> totalAmounts = new EnumMap<>(ProcessorType.class);
 
-    public PaymentService(ProcessorClient processorClient, HealthCheckService healthCheckService) {
+    public PaymentService(ProcessorClient processorClient,
+                          HealthCheckService healthCheckService,
+                          PaymentQueue paymentQueue,
+                          MetricsService metrics,
+                          ObjectProvider<PaymentRepository> paymentRepositoryProvider) {
         this.processorClient = processorClient;
         this.healthCheckService = healthCheckService;
+        this.paymentQueue = paymentQueue;
+        this.metrics = metrics;
+        this.paymentRepository = paymentRepositoryProvider.getIfAvailable();
+
+
         for (ProcessorType type : ProcessorType.values()) {
             totalRequests.put(type, new AtomicLong());
             totalAmounts.put(type, new AtomicReference<>(BigDecimal.ZERO));
@@ -36,28 +52,48 @@ public class PaymentService {
     public Payment processPayment(UUID correlationId, BigDecimal amount) {
         Instant now = Instant.now();
         ProcessorType chosen = chooseProcessor();
-        boolean success = processorClient.sendPayment(chosen.name().toLowerCase(), correlationId, amount);
 
-        if (!success) {
-            ProcessorType other = (chosen == ProcessorType.DEFAULT) ? ProcessorType.FALLBACK : ProcessorType.DEFAULT;
-            var otherStatus = healthCheckService.getStatus(other);
-            if (otherStatus.healthy()) {
-                boolean retry = processorClient.sendPayment(other.name().toLowerCase(), correlationId, amount);
-                if (retry) {
-                    register(other, correlationId, amount, now, true);
-                    return store.get(correlationId);
+        paymentQueue.submit(() -> {
+            long start = System.nanoTime();
+            boolean success = processorClient.sendPayment(chosen.name().toLowerCase(), correlationId, amount);
+            long elapsed = System.nanoTime() - start;
+
+            if (!success) {
+                ProcessorType other = (chosen == ProcessorType.DEFAULT) ? ProcessorType.FALLBACK : ProcessorType.DEFAULT;
+                var otherStatus = healthCheckService.getStatus(other);
+                if (otherStatus.healthy()) {
+                    long start2 = System.nanoTime();
+                    boolean retry = processorClient.sendPayment(other.name().toLowerCase(), correlationId, amount);
+                    long elapsed2 = System.nanoTime() - start2;
+
+                    if (retry) {
+                        register(other, correlationId, amount, now, true);
+                        metrics.recordSuccess(other, amount, elapsed2);
+                        return;
+                    } else {
+                        metrics.recordFailure(other, elapsed2);
+                    }
                 }
+                metrics.recordFailure(chosen, elapsed);
+            } else {
+                metrics.recordSuccess(chosen, amount, elapsed);
             }
-        }
 
-        register(chosen, correlationId, amount, now, success);
-        return store.get(correlationId);
+            register(chosen, correlationId, amount, now, success);
+        });
+
+        return null;
     }
+
 
     private void register(ProcessorType type, UUID correlationId, BigDecimal amount, Instant ts, boolean success) {
         store.put(correlationId, new Payment(correlationId, amount, ts, type, success));
         totalRequests.get(type).incrementAndGet();
         totalAmounts.get(type).updateAndGet(prev -> prev.add(amount));
+        if (paymentRepository != null) {
+            paymentRepository.save(new PaymentEntity(correlationId, amount, ts, type, success));
+        }
+
     }
 
     private ProcessorType chooseProcessor() {
@@ -89,6 +125,7 @@ public class PaymentService {
         return store.get(id);
     }
 }
+
 
 
 

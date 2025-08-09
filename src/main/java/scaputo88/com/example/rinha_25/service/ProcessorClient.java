@@ -2,6 +2,7 @@ package scaputo88.com.example.rinha_25.service;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
@@ -9,6 +10,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
+@Component
 public class ProcessorClient {
 
     private final RestTemplate restTemplate = new RestTemplate();
