@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  app1:
+    restart: unless-stopped
+    environment:
+      - JAVA_TOOL_OPTIONS=-XX:InitialRAMPercentage=40 -XX:MaxRAMPercentage=75 -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError
+
+  app2:
+    restart: unless-stopped
+    environment:
+      - JAVA_TOOL_OPTIONS=-XX:InitialRAMPercentage=40 -XX:MaxRAMPercentage=75 -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError
+
+  nginx:
+    restart: unless-stopped
+
+networks:
+  payment-processor:
+    external: false
