@@ -1,13 +1,9 @@
 package scaputo88.com.example.rinha_25.controller;
 
-
-import jakarta.validation.Valid;
-import jakarta.validation.constraints.DecimalMin;
-import jakarta.validation.constraints.NotNull;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import scaputo88.com.example.rinha_25.model.Payment;
-import scaputo88.com.example.rinha_25.model.PaymentRequest;
 import scaputo88.com.example.rinha_25.model.PaymentSummaryData;
 import scaputo88.com.example.rinha_25.model.ProcessorType;
 import scaputo88.com.example.rinha_25.service.PaymentService;
@@ -27,9 +23,21 @@ public class PaymentController {
     }
 
     @PostMapping
-    public ResponseEntity<Void> createPayment(@RequestBody PaymentRequest request) {
-        paymentService.processPayment(request.correlationId(), request.amount());
-        return ResponseEntity.accepted().build();
+    public ResponseEntity<Void> createPayment(@RequestBody Map<String, Object> body) {
+        try {
+            Object idRaw = body.get("correlationId");
+            Object amountRaw = body.get("amount");
+            if (idRaw == null || amountRaw == null) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+            }
+            UUID id = UUID.fromString(idRaw.toString());
+            BigDecimal amount = new BigDecimal(amountRaw.toString());
+            if (amount.signum() <= 0) return ResponseEntity.badRequest().build();
+            paymentService.processPayment(id, amount);
+            return ResponseEntity.accepted().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
     }
 
     @GetMapping("/summary")
@@ -43,6 +51,3 @@ public class PaymentController {
         return payment != null ? ResponseEntity.ok(payment) : ResponseEntity.notFound().build();
     }
 }
-
-
-
