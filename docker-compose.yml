@@ -1,6 +1,6 @@
 services:
   app1:
-    build: .
+    image: docker.io/scaputo88/rinha-2025:1.0.6
     container_name: rinha_app1
     networks:
       - payment-processor
@@ -8,10 +8,9 @@ services:
       - PP_DEFAULT_URL=http://payment-processor-default:8080
       - PP_FALLBACK_URL=http://payment-processor-fallback:8080
       - PP_ADMIN_TOKEN=123
-      - WORKERS=32
-      - PERSIST_THREADS=4
-      - REPLICA_THREADS=4
-      - QUEUE_CAPACITY=0
+      - WORKERS=2
+      - QUEUE_CAPACITY=10000
+      - REPL_TIMEOUT_MS=250
       - JAVA_TOOL_OPTIONS=-XX:+UseSerialGC -Xms32m -Xmx96m -XX:MaxDirectMemorySize=16m -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -XX:+ExitOnOutOfMemoryError
       - PEERS=http://app2:8080
     deploy:
@@ -21,7 +20,7 @@ services:
           memory: "120MB"
 
   app2:
-    build: .
+    image: docker.io/scaputo88/rinha-2025:1.0.6
     container_name: rinha_app2
     networks:
       - payment-processor
@@ -29,10 +28,9 @@ services:
       - PP_DEFAULT_URL=http://payment-processor-default:8080
       - PP_FALLBACK_URL=http://payment-processor-fallback:8080
       - PP_ADMIN_TOKEN=123
-      - WORKERS=32
-      - PERSIST_THREADS=4
-      - REPLICA_THREADS=4
-      - QUEUE_CAPACITY=0
+      - WORKERS=2
+      - QUEUE_CAPACITY=10000
+      - REPL_TIMEOUT_MS=250
       - JAVA_TOOL_OPTIONS=-XX:+UseSerialGC -Xms32m -Xmx96m -XX:MaxDirectMemorySize=16m -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -XX:+ExitOnOutOfMemoryError 
       - PEERS=http://app1:8080
     deploy:
@@ -45,7 +43,7 @@ services:
     image: nginx:1.27-alpine
     container_name: rinha_nginx
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "9999:9999"
     depends_on:

@@ -2,28 +2,18 @@ package scaputo88.com.example.rinha_25.model;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import jakarta.persistence.*;
 import java.util.UUID;
 
-
-@Entity
-@Table(name = "payments")
 public class PaymentEntity {
 
-    @Id
     private UUID id;
 
-    @Column(nullable = false, scale = 2, precision = 18)
     private BigDecimal amount;
 
-    @Column(nullable = false)
     private Instant createdAt;
 
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 16)
     private ProcessorType processor;
 
-    @Column(nullable = false)
     private boolean success;
 
     public PaymentEntity() {}
@@ -36,5 +26,14 @@ public class PaymentEntity {
         this.success = success;
     }
 
-    // getters/setters omitidos por brevidade
+    public UUID getId() { return id; }
+    public void setId(UUID id) { this.id = id; }
+    public BigDecimal getAmount() { return amount; }
+    public void setAmount(BigDecimal amount) { this.amount = amount; }
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
+    public ProcessorType getProcessor() { return processor; }
+    public void setProcessor(ProcessorType processor) { this.processor = processor; }
+    public boolean isSuccess() { return success; }
+    public void setSuccess(boolean success) { this.success = success; }
 }

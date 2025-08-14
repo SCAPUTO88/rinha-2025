@@ -1,6 +1,7 @@
 package scaputo88.com.example.rinha_25.service;
 
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -80,7 +81,12 @@ public class Payments {
         // Replicação: lista de peers (urls) e cliente HTTP com timeouts curtos
         this.peers = parsePeers(envOr("PEERS", ""));
         this.replicatorPool = Executors.newFixedThreadPool(Math.min(4, Math.max(1, this.workers)));
-        this.replicateClient = buildSmallTimeoutClient(envOrInt("REPL_TIMEOUT_MS", 250));
+        int replTimeoutCfg = envOrInt("REPL_TIMEOUT_MS", 250);
+        int replTimeout = Math.min(1000, Math.max(50, replTimeoutCfg));
+        if (replTimeoutCfg != replTimeout) {
+            log.warn("REPL_TIMEOUT_MS={} fora de faixa. Ajustando para {}ms (50-1000).", replTimeoutCfg, replTimeout);
+        }
+        this.replicateClient = buildSmallTimeoutClient(replTimeout);
 
         log.info("Payments inicializado. capacity={} workers={} peers={}", capacity, workers, peers.size());
     }
@@ -317,5 +323,20 @@ public class Payments {
     private static String envOr(String key, String def) {
         String v = System.getenv(key);
         return (v == null || v.isBlank()) ? def : v;
+    }
+
+    @PreDestroy
+    void shutdown() {
+        if (replicatorPool != null) {
+            replicatorPool.shutdown();
+            try {
+                if (!replicatorPool.awaitTermination(500, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    replicatorPool.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                replicatorPool.shutdownNow();
+            }
+        }
     }
 }
