@@ -1,15 +1,14 @@
 package scaputo88.com.example.rinha_25.service;
 
-import io.micrometer.common.util.StringUtils;
-import org.apache.hc.client5.http.config.RequestConfig;
-import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.HttpClients;
-import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
-import org.apache.hc.core5.util.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.*;
-import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.*;
+import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestTemplate;
 import scaputo88.com.example.rinha_25.metrics.ErrorMetrics;
 
 import java.math.BigDecimal;
@@ -22,109 +21,107 @@ import java.util.UUID;
 @Component
 public class ProcessorClient {
 
-    private final RestTemplate restTemplate;
+    private RestTemplate restTemplate;
     private final ErrorMetrics errorMetrics;
+    private static final Logger log = LoggerFactory.getLogger(ProcessorClient.class);
 
-    private final String DEFAULT_URL = envOr("PP_DEFAULT_URL", "http://payment-processor-default:8080");
-    private final String FALLBACK_URL = envOr("PP_FALLBACK_URL", "http://payment-processor-fallback:8080");
+    private final String defaultBaseUrl;
+    private final String fallbackBaseUrl;
     private final String ADMIN_TOKEN = envOr("PP_ADMIN_TOKEN", "123");
 
     public ProcessorClient(ErrorMetrics errorMetrics) {
         this.errorMetrics = errorMetrics;
 
-        int maxTotal = envOrInt("PP_MAX_TOTAL", 200);
-        int maxPerRoute = envOrInt("PP_MAX_PER_ROUTE", 100);
-        int connectTimeoutMs = envOrInt("PP_CONNECT_TIMEOUT_MS", 250);
-        int responseTimeoutMs = envOrInt("PP_RESPONSE_TIMEOUT_MS", 600);
+        int timeoutMs = envOrInt("PP_TIMEOUT_MS", 600);
+        this.restTemplate = buildRestTemplate(timeoutMs);
 
-        PoolingHttpClientConnectionManager cm = new PoolingHttpClientConnectionManager();
-        cm.setMaxTotal(maxTotal);
-        cm.setDefaultMaxPerRoute(maxPerRoute);
+        this.defaultBaseUrl = envOr("PP_DEFAULT_URL", "http://payment-processor-default:8080");
+        this.fallbackBaseUrl = envOr("PP_FALLBACK_URL", "http://payment-processor-fallback:8080");
+    }
 
-        RequestConfig rc = RequestConfig.custom()
-                .setConnectTimeout(Timeout.ofMilliseconds(connectTimeoutMs))
-                .setResponseTimeout(Timeout.ofMilliseconds(responseTimeoutMs))
-                .build();
+    private RestTemplate buildRestTemplate(int timeoutMs) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(timeoutMs);
+        factory.setReadTimeout(timeoutMs);
+        return new RestTemplate(factory);
+    }
 
-        CloseableHttpClient httpClient = HttpClients.custom()
-                .setConnectionManager(cm)
-                .setDefaultRequestConfig(rc)
-                .disableAutomaticRetries()
-                .build();
-
-        this.restTemplate = new RestTemplate(new HttpComponentsClientHttpRequestFactory(httpClient));
+    private String baseUrl(String processor) {
+        return processor.equalsIgnoreCase("default") ? defaultBaseUrl : fallbackBaseUrl;
     }
 
     public boolean sendPayment(String processor, UUID correlationId, BigDecimal amount) {
+        String url = baseUrl(processor) + "/payments";
         Map<String, Object> body = Map.of(
                 "correlationId", correlationId,
                 "amount", amount,
                 "requestedAt", Instant.now().toString()
         );
-
-        String url = (processor.equalsIgnoreCase("default") ? DEFAULT_URL : FALLBACK_URL) + "/payments";
-
         try {
-            ResponseEntity<String> response = restTemplate.postForEntity(url, body, String.class);
-            return response.getStatusCode().is2xxSuccessful();
+            ResponseEntity<String> resp = restTemplate.postForEntity(url, body, String.class);
+            log.info("[ProcessorClient] POST /payments status {}", resp.getStatusCode());
+            return resp.getStatusCode().is2xxSuccessful();
         } catch (ResourceAccessException e) {
-            if (rootCause(e, SocketTimeoutException.class)) {
+            if (e.getCause() instanceof SocketTimeoutException) {
                 errorMetrics.increment(ErrorMetrics.ErrorType.TIMEOUT);
-            } else if (rootCause(e, ConnectException.class)) {
+            } else if (e.getCause() instanceof ConnectException) {
                 errorMetrics.increment(ErrorMetrics.ErrorType.CONNECTION_REFUSED);
             } else {
                 errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
             }
+            log.warn("[ProcessorClient] ERRO POST /payments: {}", e.getMessage());
             return false;
         } catch (HttpServerErrorException e) {
             errorMetrics.increment(ErrorMetrics.ErrorType.SERVER_ERROR);
+            log.warn("[ProcessorClient] 5xx POST /payments: {}", e.getStatusCode());
             return false;
         } catch (RestClientException e) {
             errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
+            log.warn("[ProcessorClient] ERRO POST /payments: {}", e.getMessage());
             return false;
         }
     }
 
     public HealthStatus checkHealth(String processor) {
-        String url = (processor.equalsIgnoreCase("default") ? DEFAULT_URL : FALLBACK_URL) + "/payments/service-health";
+        String url = baseUrl(processor) + "/payments/service-health";
         try {
-            ResponseEntity<Map> response = restTemplate.getForEntity(url, Map.class);
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                Map<?, ?> json = response.getBody();
-                boolean failing = Boolean.TRUE.equals(json.get("failing"));
-                int minResponseTime = ((Number) json.get("minResponseTime")).intValue();
-                return new HealthStatus(!failing, minResponseTime);
-            }
+            ResponseEntity<Map> resp = restTemplate.getForEntity(url, Map.class);
+            Map<String, Object> json = resp.getBody();
+            boolean failing = json != null && Boolean.TRUE.equals(json.get("failing"));
+            int minResponseTime = json != null && json.get("minResponseTime") != null
+                    ? ((Number) json.get("minResponseTime")).intValue()
+                    : Integer.MAX_VALUE;
+            return new HealthStatus(!failing, minResponseTime);
         } catch (ResourceAccessException e) {
-            if (rootCause(e, SocketTimeoutException.class)) {
+            if (e.getCause() instanceof SocketTimeoutException) {
                 errorMetrics.increment(ErrorMetrics.ErrorType.TIMEOUT);
-            } else if (rootCause(e, ConnectException.class)) {
+            } else if (e.getCause() instanceof ConnectException) {
                 errorMetrics.increment(ErrorMetrics.ErrorType.CONNECTION_REFUSED);
             } else {
                 errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
             }
+            log.warn("[ProcessorClient] ERRO /service-health: {}", e.getMessage());
+            return new HealthStatus(false, Integer.MAX_VALUE);
         } catch (HttpServerErrorException e) {
             errorMetrics.increment(ErrorMetrics.ErrorType.SERVER_ERROR);
+            log.warn("[ProcessorClient] 5xx /service-health: {}", e.getStatusCode());
+            return new HealthStatus(false, Integer.MAX_VALUE);
         } catch (RestClientException e) {
             errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
+            log.warn("[ProcessorClient] ERRO /service-health: {}", e.getMessage());
+            return new HealthStatus(false, Integer.MAX_VALUE);
         }
-        return new HealthStatus(false, Integer.MAX_VALUE);
     }
 
-    public record HealthStatus(boolean healthy, int minResponseTime) {}
-
-    public record AdminSummary(long totalRequests, BigDecimal totalAmount) {}
-
     public AdminSummary getAdminSummary(String processor, String from, String to) {
-        String base = processor.equalsIgnoreCase("default") ? DEFAULT_URL : FALLBACK_URL;
-        StringBuilder url = new StringBuilder(base + "/admin/payments-summary");
+        StringBuilder uri = new StringBuilder(baseUrl(processor)).append("/admin/payments-summary");
         boolean hasQuery = false;
-        if (StringUtils.isNotBlank(from)) {
-            url.append("?from=").append(from);
+        if (from != null && !from.isBlank()) {
+            uri.append("?from=").append(from);
             hasQuery = true;
         }
-        if (StringUtils.isNotBlank(to)) {
-            url.append(hasQuery ? "&" : "?").append("to=").append(to);
+        if (to != null && !to.isBlank()) {
+            uri.append(hasQuery ? "&" : "?").append("to=").append(to);
         }
 
         HttpHeaders headers = new HttpHeaders();
@@ -132,27 +129,34 @@ public class ProcessorClient {
         HttpEntity<Void> entity = new HttpEntity<>(headers);
 
         try {
-            ResponseEntity<Map> response = restTemplate.exchange(url.toString(), HttpMethod.GET, entity, Map.class);
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                Map<?, ?> json = response.getBody();
-                long totalRequests = ((Number) json.get("totalRequests")).longValue();
-                BigDecimal totalAmount = new BigDecimal(String.valueOf(json.get("totalAmount")));
-                return new AdminSummary(totalRequests, totalAmount);
-            }
+            ResponseEntity<Map> resp = restTemplate.exchange(uri.toString(), HttpMethod.GET, entity, Map.class);
+            Map<String, Object> json = resp.getBody();
+            long totalRequests = json != null && json.get("totalRequests") != null
+                    ? ((Number) json.get("totalRequests")).longValue()
+                    : 0L;
+            BigDecimal totalAmount = json != null && json.get("totalAmount") != null
+                    ? new BigDecimal(String.valueOf(json.get("totalAmount")))
+                    : BigDecimal.ZERO;
+            return new AdminSummary(totalRequests, totalAmount);
         } catch (ResourceAccessException e) {
-            if (rootCause(e, SocketTimeoutException.class)) {
+            if (e.getCause() instanceof SocketTimeoutException) {
                 errorMetrics.increment(ErrorMetrics.ErrorType.TIMEOUT);
-            } else if (rootCause(e, ConnectException.class)) {
+            } else if (e.getCause() instanceof ConnectException) {
                 errorMetrics.increment(ErrorMetrics.ErrorType.CONNECTION_REFUSED);
             } else {
                 errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
             }
+            log.warn("[ProcessorClient] ERRO /admin/payments-summary: {}", e.getMessage());
+            return new AdminSummary(0L, BigDecimal.ZERO);
         } catch (HttpServerErrorException e) {
             errorMetrics.increment(ErrorMetrics.ErrorType.SERVER_ERROR);
+            log.warn("[ProcessorClient] 5xx /admin/payments-summary: {}", e.getStatusCode());
+            return new AdminSummary(0L, BigDecimal.ZERO);
         } catch (RestClientException e) {
             errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
+            log.warn("[ProcessorClient] ERRO /admin/payments-summary: {}", e.getMessage());
+            return new AdminSummary(0L, BigDecimal.ZERO);
         }
-        return new AdminSummary(0L, BigDecimal.ZERO);
     }
 
     private static String envOr(String key, String def) {
@@ -169,12 +173,6 @@ public class ProcessorClient {
         }
     }
 
-    private static boolean rootCause(Throwable t, Class<? extends Throwable> target) {
-        Throwable cur = t;
-        while (cur != null) {
-            if (target.isInstance(cur)) return true;
-            cur = cur.getCause();
-        }
-        return false;
-    }
+    public record HealthStatus(boolean healthy, int minResponseTime) {}
+    public record AdminSummary(long totalRequests, BigDecimal totalAmount) {}
 }

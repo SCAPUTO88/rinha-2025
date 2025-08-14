@@ -3,129 +3,93 @@ package scaputo88.com.example.rinha_25.service;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.beans.factory.ObjectProvider;
+import scaputo88.com.example.rinha_25.dto.PaymentSummaryResponse;
+import scaputo88.com.example.rinha_25.model.Payment;
 import scaputo88.com.example.rinha_25.model.ProcessorType;
-import scaputo88.com.example.rinha_25.repository.PaymentRepository;
 
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @ExtendWith(MockitoExtension.class)
 class PaymentServiceTest {
 
+    private Payments payments;
+
     @Mock
     private ProcessorClient processorClient;
 
-    @Mock
-    private HealthCheckService healthCheckService;
-
-    @Mock
-    private PaymentQueue paymentQueue;
-
-    @Mock
-    private MetricsService metrics;
-
-    @Mock
-    private PaymentRepository paymentRepository;
-
-    @Mock
-    private ReplicationService peerReplicator;
-
-    @Mock
-    private ObjectProvider<PaymentRepository> paymentRepositoryProvider;
-
-    private PaymentService paymentService;
-
     @BeforeEach
-    void setUp() {
-        // Provider devolve o repository mock
-        when(paymentRepositoryProvider.getIfAvailable()).thenReturn(paymentRepository);
-
-        // Instancia o service manualmente
-        paymentService = new PaymentService(
-                processorClient,
-                healthCheckService,
-                paymentQueue,
-                metrics,
-                paymentRepositoryProvider,
-                peerReplicator
-        );
-
-        doAnswer(inv -> {
-            Runnable r = inv.getArgument(0);
-            r.run();
-            return null; // ajuste se o método submit tiver outro retorno
-        }).when(paymentQueue).submit(any());
+    void setup() {
+        // Payments requer ProcessorClient, mas os testes aqui não acionam os workers
+        // pois usamos applyReplication (registro direto/idempotente)
+        payments = new Payments(processorClient);
     }
 
     @Test
-    void deveProcessarPagamentoComSucesso() {
+    void deveRegistrarPagamentoComSucesso() {
         UUID id = UUID.randomUUID();
+        Instant agora = Instant.now();
 
-        // Escolha determinística: DEFAULT mais rápido que FALLBACK
-        when(healthCheckService.getStatus(ProcessorType.DEFAULT))
-                .thenReturn(new ProcessorClient.HealthStatus(true, 10));
-        when(healthCheckService.getStatus(ProcessorType.FALLBACK))
-                .thenReturn(new ProcessorClient.HealthStatus(true, 20));
+        Payment p = new Payment(id, BigDecimal.TEN, agora, ProcessorType.DEFAULT, true);
 
-        when(processorClient.sendPayment(eq("default"), eq(id), eq(BigDecimal.TEN)))
-                .thenReturn(true);
+        payments.applyReplication(p);
 
-        paymentService.processPayment(id, BigDecimal.TEN);
-
-        verify(processorClient, times(1))
-                .sendPayment(eq("default"), eq(id), eq(BigDecimal.TEN));
-         verify(metrics).recordSuccess(eq(ProcessorType.DEFAULT), eq(BigDecimal.TEN), anyLong());
+        PaymentSummaryResponse def = summaryForDefault();
+        assertEquals(1L, def.getTotalRequests());
+        assertEquals(new BigDecimal("10.00"), def.getTotalAmount());
     }
 
     @Test
-    void deveTentarFallbackQuandoPrimeiroProcessorFalhar() {
+    void naoDeveDuplicarPagamentoIdempotente() {
         UUID id = UUID.randomUUID();
-        BigDecimal amt = BigDecimal.valueOf(50);
+        Instant agora = Instant.now();
+        Payment p = new Payment(id, BigDecimal.TEN, agora, ProcessorType.DEFAULT, true);
 
-        when(healthCheckService.getStatus(ProcessorType.DEFAULT))
-                .thenReturn(new ProcessorClient.HealthStatus(true, 10));
-        when(healthCheckService.getStatus(ProcessorType.FALLBACK))
-                .thenReturn(new ProcessorClient.HealthStatus(true, 20));
+        payments.applyReplication(p);
+        payments.applyReplication(p); // repetido — deve ser ignorado
 
-        // Primeira tentativa (default) falha, segunda (fallback) sucesso
-        when(processorClient.sendPayment(eq("default"), eq(id), eq(amt))).thenReturn(false);
-        when(processorClient.sendPayment(eq("fallback"), eq(id), eq(amt))).thenReturn(true);
-
-        paymentService.processPayment(id, amt);
-
-        InOrder inOrder = inOrder(processorClient);
-        inOrder.verify(processorClient).sendPayment(eq("default"), eq(id), eq(amt));
-        inOrder.verify(processorClient).sendPayment(eq("fallback"), eq(id), eq(amt));
-//         verify(metrics).recordFailure(eq(ProcessorType.DEFAULT), anyLong());
-//         verify(metrics).recordSuccess(eq(ProcessorType.FALLBACK), eq(amt), anyLong());
+        PaymentSummaryResponse def = summaryForDefault();
+        assertEquals(1L, def.getTotalRequests());
+        assertEquals(new BigDecimal("10.00"), def.getTotalAmount());
     }
 
     @Test
-    void naoDeveChamarFallbackSeNaoEstiverSaudavel() {
-        UUID id = UUID.randomUUID();
-        BigDecimal amt = BigDecimal.valueOf(30);
+    void resumoPorIntervaloConsideraApenasBucketsDentroDoRange() {
+        Instant agora = Instant.now();
+        Payment dentro = new Payment(UUID.randomUUID(), BigDecimal.ONE, agora, ProcessorType.DEFAULT, true);
+        Payment fora = new Payment(UUID.randomUUID(), BigDecimal.ONE, agora.minus(2, ChronoUnit.DAYS), ProcessorType.DEFAULT, true);
 
-        when(healthCheckService.getStatus(ProcessorType.DEFAULT))
-                .thenReturn(new ProcessorClient.HealthStatus(true, 10));
-        when(healthCheckService.getStatus(ProcessorType.FALLBACK))
-                .thenReturn(new ProcessorClient.HealthStatus(false, 999));
+        payments.applyReplication(dentro);
+        payments.applyReplication(fora);
 
-        when(processorClient.sendPayment(eq("default"), eq(id), eq(amt))).thenReturn(false);
+        String from = agora.minus(1, ChronoUnit.HOURS).toString();
+        String to = agora.plus(1, ChronoUnit.HOURS).toString();
 
-        paymentService.processPayment(id, amt);
+        PaymentSummaryResponse defRange = summaryForDefault(from, to);
 
-        verify(processorClient, times(1))
-                .sendPayment(eq("default"), eq(id), eq(amt));
-        verify(processorClient, never())
-                .sendPayment(eq("fallback"), any(), any());
-         verify(metrics, atLeastOnce()).recordFailure(eq(ProcessorType.DEFAULT), anyLong());
+        assertEquals(1L, defRange.getTotalRequests());
+        // 1 real = 1.00
+        assertEquals(new BigDecimal("1.00"), defRange.getTotalAmount());
+    }
+
+    // Helpers
+
+    private PaymentSummaryResponse summaryForDefault() {
+        return summaryForDefault(null, null);
+    }
+
+    private PaymentSummaryResponse summaryForDefault(String from, String to) {
+        List<PaymentSummaryResponse> summaries = payments.getSummary(from, to);
+        return summaries.stream()
+                .filter(s -> s.getType() == ProcessorType.DEFAULT)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Resumo DEFAULT não encontrado"));
     }
 }
-

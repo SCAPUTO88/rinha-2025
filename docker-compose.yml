@@ -8,7 +8,9 @@ services:
       - PP_DEFAULT_URL=http://payment-processor-default:8080
       - PP_FALLBACK_URL=http://payment-processor-fallback:8080
       - PP_ADMIN_TOKEN=123
-      - WORKERS=4
+      - WORKERS=32
+      - PERSIST_THREADS=4
+      - REPLICA_THREADS=4
       - QUEUE_CAPACITY=0
       - JAVA_TOOL_OPTIONS=-XX:+UseSerialGC -Xms32m -Xmx96m -XX:MaxDirectMemorySize=16m -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -XX:+ExitOnOutOfMemoryError
       - PEERS=http://app2:8080
@@ -27,7 +29,9 @@ services:
       - PP_DEFAULT_URL=http://payment-processor-default:8080
       - PP_FALLBACK_URL=http://payment-processor-fallback:8080
       - PP_ADMIN_TOKEN=123
-      - WORKERS=4
+      - WORKERS=32
+      - PERSIST_THREADS=4
+      - REPLICA_THREADS=4
       - QUEUE_CAPACITY=0
       - JAVA_TOOL_OPTIONS=-XX:+UseSerialGC -Xms32m -Xmx96m -XX:MaxDirectMemorySize=16m -XX:MaxMetaspaceSize=64m -XX:ReservedCodeCacheSize=32m -XX:+ExitOnOutOfMemoryError 
       - PEERS=http://app1:8080

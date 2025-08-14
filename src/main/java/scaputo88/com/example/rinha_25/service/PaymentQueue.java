@@ -1,126 +1,150 @@
 package scaputo88.com.example.rinha_25.service;
 
 
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
-import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
-import jakarta.annotation.PostConstruct;
-import org.springframework.stereotype.Component;
-import scaputo88.com.example.rinha_25.model.QueueTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
+import java.util.Objects;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Component
-public class PaymentQueue {
+public class PaymentQueue implements AutoCloseable {
 
-    private static final Logger log = LoggerFactory.getLogger(PaymentQueue.class);
+    private final Logger log = LoggerFactory.getLogger(PaymentQueue.class);
 
-    private final BlockingQueue<EnqueuedTask> queue;
-    private ExecutorService workers;
-    private final MeterRegistry registry;
-
-    private final Counter droppedCounter;
-    private final Timer waitTimer;
-    private final Timer execTimer;
-
+    private final ThreadPoolExecutor executor;
     private final int offerTimeoutMs;
 
-    public PaymentQueue(MetricsService metricsService) {
-        this.registry = metricsService.getRegistry();
+    public PaymentQueue() {
+        int workers = getEnvIntSafe("WORKERS", 32);
+        int queueCapacity = getEnvIntSafe("QUEUE_CAPACITY", 65536);
+        this.offerTimeoutMs = getEnvIntSafe("QUEUE_OFFER_TIMEOUT_MS", 50);
 
-        int capacity = parseIntEnv("QUEUE_CAPACITY", -1);
-        this.queue = capacity > 0 ? new LinkedBlockingQueue<>(capacity) : new LinkedBlockingQueue<>();
+        BlockingQueue<Runnable> queue = new LinkedBlockingQueue<>(queueCapacity);
+        ThreadFactory tf = new NamedThreadFactory("pay-worker");
+        RejectedExecutionHandler reh = new BlockOrLogPolicy(queue, offerTimeoutMs);
 
-        this.offerTimeoutMs = parseIntEnv("QUEUE_OFFER_TIMEOUT_MS", 50);
+        this.executor = new ThreadPoolExecutor(
+                workers,
+                workers,
+                30L, TimeUnit.SECONDS,
+                queue,
+                tf,
+                reh
+        );
+        this.executor.allowCoreThreadTimeOut(false);
 
-        // Métricas
-        registry.gauge("payments.queue.size", queue, BlockingQueue::size);
-        this.droppedCounter = Counter.builder("payments.queue.dropped").register(registry);
-        this.waitTimer = Timer.builder("payments.queue.wait").publishPercentiles(0.5, 0.9, 0.95, 0.99).register(registry);
-        this.execTimer = Timer.builder("payments.task.duration").publishPercentiles(0.5, 0.9, 0.95, 0.99).register(registry);
+        log.info("✅ PaymentQueue inicializada: workers={}, queueCapacity={}, offerTimeoutMs={}",
+                workers, queueCapacity, offerTimeoutMs);
     }
 
-    @PostConstruct
-    public void startWorkers() {
-        int nWorkers = Math.max(1, parseIntEnv("WORKERS", 4));
-        ExecutorService raw = Executors.newFixedThreadPool(nWorkers);
-        // Se você usa Micrometer executor metrics, mantenha aqui. Caso não, pode remover.
-        this.workers = ExecutorServiceMetrics.monitor(registry, raw, "payments.workers");
-
-        for (int i = 0; i < nWorkers; i++) {
-            workers.submit(() -> {
-                while (true) {
-                    try {
-                        EnqueuedTask task = queue.take();
-                        long startExecNs = System.nanoTime();
-                        long waitedNs = System.nanoTime() - task.enqueuedAtNs;
-                        waitTimer.record(waitedNs, TimeUnit.NANOSECONDS);
-                        try {
-                            task.delegate.run();
-                        } finally {
-                            execTimer.record(System.nanoTime() - startExecNs, TimeUnit.NANOSECONDS);
-                        }
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    } catch (Exception ex) {
-                        log.warn("Erro ao executar task da fila: {}", ex.getMessage());
-                    }
-                }
-            });
-        }
-        log.info("PaymentQueue iniciada com {} workers", nWorkers);
-    }
-
-    public void submit(QueueTask task) {
-        EnqueuedTask wrapped = new EnqueuedTask(task, System.nanoTime());
-        boolean offered = false;
+    public void submit(Runnable task) {
+        Objects.requireNonNull(task, "task");
         try {
-            offered = queue.offer(wrapped, offerTimeoutMs, TimeUnit.MILLISECONDS);
+            executor.execute(task);
+        } catch (RejectedExecutionException rex) {
+            boolean offered = false;
+            try {
+                offered = ((BlockingQueue<Runnable>) executor.getQueue())
+                        .offer(task, offerTimeoutMs, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+            if (!offered) {
+                log.warn("⚠️ Fila de pagamentos saturada: rejeitando task após {} ms", offerTimeoutMs);
+                throw rex;
+            }
+        }
+    }
+
+    public int getQueueSize() {
+        return executor.getQueue().size();
+    }
+
+    public int getActiveCount() {
+        return executor.getActiveCount();
+    }
+
+    @Override
+    public void close() {
+        shutdownGracefully(5, TimeUnit.SECONDS);
+    }
+
+    public void shutdownGracefully(long timeout, TimeUnit unit) {
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(timeout, unit)) {
+                log.warn("⏳ Timeout ao finalizar PaymentQueue; forçando shutdownNow()");
+                executor.shutdownNow();
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-        }
-        if (!offered) {
-            droppedCounter.increment();
-            log.warn("Task descartada: fila cheia (timeout {}ms, size={}, remaining={})",
-                    offerTimeoutMs, queue.size(), queue.remainingCapacity());
+            executor.shutdownNow();
         }
     }
 
-    public int getQueueSize() { return queue.size(); }
+    // ----- Utilitários internos -----
 
-    public int getRemainingCapacity() { return queue.remainingCapacity(); }
-
-    public int getActiveWorkerCount() {
-        if (workers instanceof ThreadPoolExecutor tpe) return tpe.getActiveCount();
-        return -1;
-    }
-
-    public int getTotalWorkerCount() {
-        if (workers instanceof ThreadPoolExecutor tpe) return tpe.getPoolSize();
-        return -1;
-    }
-
-    private int parseIntEnv(String key, int def) {
+    private int getEnvIntSafe(String key, int def) {
+        String v = System.getenv(key);
+        if (v == null) {
+            log.warn("Variável {} não definida. Usando valor padrão: {}", key, def);
+            return def;
+        }
         try {
-            String v = System.getenv(key);
-            if (v == null || v.isBlank()) return def;
-            return Integer.parseInt(v.trim());
-        } catch (Exception e) {
+            int val = Integer.parseInt(v.trim());
+            if (val <= 0) {
+                log.warn("Valor inválido para {}: {}. Usando valor padrão: {}", key, val, def);
+                return def;
+            }
+            return val;
+        } catch (NumberFormatException e) {
+            log.warn("Valor inválido para {}: {}. Usando valor padrão: {}", key, v, def);
             return def;
         }
     }
 
-    private static final class EnqueuedTask {
-        final QueueTask delegate;
-        final long enqueuedAtNs;
+    private static final class NamedThreadFactory implements ThreadFactory {
+        private final String base;
+        private final AtomicInteger idx = new AtomicInteger(1);
 
-        EnqueuedTask(QueueTask delegate, long enqueuedAtNs) {
-            this.delegate = delegate;
-            this.enqueuedAtNs = enqueuedAtNs;
+        NamedThreadFactory(String base) {
+            this.base = base;
+        }
+
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, base + "-" + idx.getAndIncrement());
+            t.setDaemon(true);
+            return t;
+        }
+    }
+
+    /**
+     * Política de rejeição que tenta enfileirar com timeout (backpressure).
+     */
+    private static final class BlockOrLogPolicy implements RejectedExecutionHandler {
+        private final BlockingQueue<Runnable> queue;
+        private final int offerTimeoutMs;
+
+        BlockOrLogPolicy(BlockingQueue<Runnable> queue, int offerTimeoutMs) {
+            this.queue = queue;
+            this.offerTimeoutMs = offerTimeoutMs;
+        }
+
+        @Override
+        public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+            boolean offered = false;
+            try {
+                offered = queue.offer(r, offerTimeoutMs, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (!offered) {
+                throw new RejectedExecutionException("Fila cheia após " + offerTimeoutMs + "ms");
+            }
         }
     }
 }

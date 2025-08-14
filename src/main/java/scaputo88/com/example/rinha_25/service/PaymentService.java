@@ -1,263 +1,172 @@
 package scaputo88.com.example.rinha_25.service;
 
-import org.springframework.beans.factory.ObjectProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import scaputo88.com.example.rinha_25.dto.PaymentSummaryResponse;
 import scaputo88.com.example.rinha_25.model.Payment;
-import scaputo88.com.example.rinha_25.model.PaymentEntity;
-import scaputo88.com.example.rinha_25.model.PaymentSummaryData;
 import scaputo88.com.example.rinha_25.model.ProcessorType;
-import scaputo88.com.example.rinha_25.repository.PaymentRepository;
-import scaputo88.com.example.rinha_25.util.NamedDaemonFactory;
-import scaputo88.com.example.rinha_25.util.SummaryUtils.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
-import java.util.EnumMap;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.*;
+import java.time.format.DateTimeParseException;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
 
-import static scaputo88.com.example.rinha_25.util.PaymentUtils.*;
-import static scaputo88.com.example.rinha_25.util.SummaryUtils.*;
-
+/**
+ * Serviço responsável por gerenciar pagamentos.
+ */
 @Service
 public class PaymentService {
 
-    private final ProcessorClient processorClient;
-    private final HealthCheckService healthCheckService;
-    private final PaymentQueue paymentQueue;
-    private final MetricsService metrics;
-    private final PaymentRepository paymentRepository;
-    private final ReplicationService peerReplicator;
+    private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
+    private final Map<UUID, Payment> payments = new ConcurrentHashMap<>();
 
-    private final Map<UUID, Payment> store = new ConcurrentHashMap<>();
-    private final Map<ProcessorType, LongAdder> totalRequests = new EnumMap<>(ProcessorType.class);
-    private final Map<ProcessorType, LongAdder> totalAmountCents = new EnumMap<>(ProcessorType.class);
-    private final ConcurrentSkipListMap<Instant, EnumMap<ProcessorType, Bucket>> minuteBuckets = new ConcurrentSkipListMap<>();
+    // Contadores globais por ProcessorType
+    private final Map<ProcessorType, LongAdder> totalRequests = new ConcurrentHashMap<>();
+    private final Map<ProcessorType, LongAdder> totalAmountCents = new ConcurrentHashMap<>();
 
-    private final ExecutorService persistExecutor;
-    private final ExecutorService replicateExecutor;
+    // Buckets por minuto por ProcessorType
+    private final Map<ProcessorType, Map<Long, MinuteBucket>> minuteBuckets = new ConcurrentHashMap<>();
 
-    public PaymentService(ProcessorClient processorClient,
-                          HealthCheckService healthCheckService,
-                          PaymentQueue paymentQueue,
-                          MetricsService metrics,
-                          ObjectProvider<PaymentRepository> paymentRepositoryProvider,
-                          ReplicationService peerReplicator) {
-        this.processorClient = processorClient;
-        this.healthCheckService = healthCheckService;
-        this.paymentQueue = paymentQueue;
-        this.metrics = metrics;
-        this.paymentRepository = paymentRepositoryProvider.getIfAvailable();
-        this.peerReplicator = peerReplicator;
-
+    public PaymentService() {
+        // Inicializa as estruturas para cada tipo
         for (ProcessorType type : ProcessorType.values()) {
             totalRequests.put(type, new LongAdder());
             totalAmountCents.put(type, new LongAdder());
+            minuteBuckets.put(type, new ConcurrentHashMap<>());
+        }
+        log.info("PaymentService inicializado com suporte a múltiplos ProcessorType");
+    }
+
+    public void registerIdempotent(Payment payment) {
+        ProcessorType type = payment.getProcessor();
+        if (type == null) type = ProcessorType.DEFAULT;
+        payment.setProcessor(type);
+
+        // Idempotência por correlationId
+        Payment existing = payments.putIfAbsent(payment.getCorrelationId(), payment);
+        if (existing != null) {
+            return;
         }
 
-        int persistThreads = Math.max(1, parseIntEnv("PERSIST_THREADS", 2));
-        int replicaThreads = Math.max(1, parseIntEnv("REPLICA_THREADS",
-                Math.min(8, Math.max(2, peerReplicator.peersCount()))));
+        totalRequests.get(type).increment();
+        totalAmountCents.get(type).add(toCents(payment.getAmount()));
 
-        this.persistExecutor = new ThreadPoolExecutor(
-                persistThreads, persistThreads,
-                0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>(2048),
-                new NamedDaemonFactory("persist"),
-                new ThreadPoolExecutor.CallerRunsPolicy()
-        );
-
-        this.replicateExecutor = new ThreadPoolExecutor(
-                replicaThreads, replicaThreads,
-                0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>(4096),
-                new NamedDaemonFactory("replicate"),
-                new ThreadPoolExecutor.DiscardPolicy()
-        );
-    }
-
-    public Payment processPayment(UUID correlationId, BigDecimal amount) {
-        Instant now = Instant.now();
-        ProcessorType chosen = chooseProcessor();
-
-        paymentQueue.submit(() -> {
-            long start = System.nanoTime();
-            boolean success = processorClient.sendPayment(chosen.name().toLowerCase(), correlationId, amount);
-            long elapsed = System.nanoTime() - start;
-
-            if (!success) {
-                ProcessorType other = (chosen == ProcessorType.DEFAULT) ? ProcessorType.FALLBACK : ProcessorType.DEFAULT;
-                var otherStatus = healthCheckService.getStatus(other);
-                if (otherStatus.healthy()) {
-                    long start2 = System.nanoTime();
-                    boolean retry = processorClient.sendPayment(other.name().toLowerCase(), correlationId, amount);
-                    long elapsed2 = System.nanoTime() - start2;
-
-                    if (retry) {
-                        registerIdempotent(other, correlationId, amount, now, true);
-                        metrics.recordSuccess(other, amount, elapsed2);
-                        return;
-                    } else {
-                        metrics.recordFailure(other, elapsed2);
-                    }
-                }
-                metrics.recordFailure(chosen, elapsed);
-            } else {
-                metrics.recordSuccess(chosen, amount, elapsed);
-            }
-            registerIdempotent(chosen, correlationId, amount, now, success);
-        });
-
-        return null;
-    }
-
-    private void registerIdempotent(ProcessorType type, UUID correlationId, BigDecimal amount, Instant ts, boolean success) {
-        Payment newPayment = new Payment(correlationId, amount, ts, type, success);
-
-        store.compute(correlationId, (id, cur) -> {
-            if (cur == null) {
-                if (success) {
-                    incrementCounters(type, amount);
-                    updateMinuteBucket(ts, type, amount);
-                    asyncPersist(newPayment);
-                    asyncReplicate(newPayment);
-                } else {
-                    asyncPersist(newPayment);
-                }
-                return newPayment;
-            }
-            if (cur.success()) {
-                return cur;
-            }
-            if (success) {
-                incrementCounters(type, amount);
-                updateMinuteBucket(ts, type, amount);
-                asyncPersist(newPayment);
-                asyncReplicate(newPayment);
-                return newPayment;
-            }
-            return cur;
-        });
+        long minute = truncateToMinute(payment.getRequestedAt());
+        minuteBuckets.get(type)
+                .computeIfAbsent(minute, m -> new MinuteBucket())
+                .add(payment.getAmount());
     }
 
     public void applyReplication(Payment payment) {
-        if (payment == null || payment.correlationId() == null) return;
-
-        store.compute(payment.correlationId(), (id, cur) -> {
-            if (cur == null) {
-                if (payment.success()) {
-                    incrementCounters(payment.processor(), payment.amount());
-                    updateMinuteBucket(payment.requestedAt(), payment.processor(), payment.amount());
-                }
-                asyncPersist(payment);
-                return payment;
-            }
-            if (cur.success()) return cur;
-            if (payment.success()) {
-                incrementCounters(payment.processor(), payment.amount());
-                updateMinuteBucket(payment.requestedAt(), payment.processor(), payment.amount());
-                asyncPersist(payment);
-                return payment;
-            }
-            return cur;
-        });
+        registerIdempotent(payment);
     }
 
-    private ProcessorType chooseProcessor() {
-        var statusDefault = healthCheckService.getStatus(ProcessorType.DEFAULT);
-        var statusFallback = healthCheckService.getStatus(ProcessorType.FALLBACK);
-
-        if (statusDefault.healthy() && !statusFallback.healthy()) return ProcessorType.DEFAULT;
-        if (!statusDefault.healthy() && statusFallback.healthy()) return ProcessorType.FALLBACK;
-
-        if (statusDefault.healthy() && statusFallback.healthy()) {
-            if (Math.abs(statusDefault.minResponseTime() - statusFallback.minResponseTime()) < 10) {
-                return ProcessorType.DEFAULT;
-            }
-            return (statusDefault.minResponseTime() <= statusFallback.minResponseTime())
-                    ? ProcessorType.DEFAULT : ProcessorType.FALLBACK;
-        }
-        return ProcessorType.DEFAULT;
+    public Optional<Payment> findById(UUID id) {
+        return Optional.ofNullable(payments.get(id));
     }
 
-    public Map<ProcessorType, PaymentSummaryData> getSummary(String from, String to) {
-        Instant fromTs = parseInstant(from);
-        Instant toTs = parseInstant(to);
-
-        if (fromTs == null && toTs == null) {
-            return getSummary();
-        }
-        if (fromTs == null && toTs != null) {
-            fromTs = minuteKey(minuteBuckets.isEmpty() ? Instant.now() : minuteBuckets.firstKey());
-        }
-        if (fromTs != null && toTs == null) {
-            toTs = minuteKey(minuteBuckets.isEmpty() ? Instant.now() : minuteBuckets.lastKey())
-                    .plus(1, ChronoUnit.MINUTES);
-        }
-
-        var agg = initAggregators();
-        if (!minuteBuckets.isEmpty()) {
-            aggregateRange(fromTs, toTs, minuteBuckets, agg);
-        }
-
-        return toSummaryData(agg);
-    }
-
-    public Map<ProcessorType, PaymentSummaryData> getSummary() {
-        EnumMap<ProcessorType, PaymentSummaryData> map = new EnumMap<>(ProcessorType.class);
+    public List<PaymentSummaryResponse> getSummaryResponse(String from, String to) {
+        List<PaymentSummaryResponse> summaries = new ArrayList<>();
         for (ProcessorType type : ProcessorType.values()) {
-            long req = totalRequests.get(type).sum();
-            long cents = totalAmountCents.get(type).sum();
-            map.put(type, new PaymentSummaryData(req, centsToBigDecimal(cents)));
+            PaymentSummary summary = (from == null && to == null)
+                    ? getSummary(type)
+                    : getSummary(type, from, to);
+
+            summaries.add(new PaymentSummaryResponse(
+                    type,
+                    summary.getTotalCount(),
+                    centsToBigDecimal(summary.getTotalAmountCents())
+            ));
         }
-        return map;
+        return summaries;
     }
 
-    public Payment getPayment(UUID id) {
-        return store.get(id);
+    private PaymentSummary getSummary(ProcessorType type) {
+        return new PaymentSummary(
+                totalRequests.get(type).sum(),
+                totalAmountCents.get(type).sum()
+        );
     }
 
-    private void incrementCounters(ProcessorType type, BigDecimal amount) {
-        totalRequests.get(type).increment();
-        totalAmountCents.get(type).add(toCents(amount));
-    }
+    private PaymentSummary getSummary(ProcessorType type, String from, String to) {
+        Instant fromInstant = parseDate(from);
+        Instant toInstant = parseDate(to);
 
-    private void updateMinuteBucket(Instant ts, ProcessorType type, BigDecimal amount) {
-        Instant key = minuteKey(ts);
-        EnumMap<ProcessorType, Bucket> map = minuteBuckets
-                .computeIfAbsent(key, k -> new EnumMap<>(ProcessorType.class));
-        Bucket b = map.computeIfAbsent(type, t -> new Bucket());
-        b.requests.increment();
-        b.amountCents.add(toCents(amount));
-    }
+        long fromMinute = truncateToMinute(fromInstant);
+        long toMinute = truncateToMinute(toInstant);
 
-    private void asyncPersist(Payment payment) {
-        if (paymentRepository == null) return;
-        persistExecutor.submit(() -> {
-            try {
-                PaymentEntity entity = new PaymentEntity(
-                        payment.correlationId(), payment.amount(),
-                        payment.requestedAt(), payment.processor(), payment.success()
-                );
-                paymentRepository.save(entity);
-            } catch (Exception ignored) {
-                // opcional: log/metrics de falha de persistência
+        long count = 0;
+        long amount = 0;
+
+        for (Map.Entry<Long, MinuteBucket> entry : minuteBuckets.get(type).entrySet()) {
+            long minute = entry.getKey();
+            if (minute >= fromMinute && minute <= toMinute) {
+                MinuteBucket bucket = entry.getValue();
+                count += bucket.getCount();
+                amount += bucket.getTotalCents();
             }
-        });
+        }
+
+        return new PaymentSummary(count, amount);
     }
 
-    private void asyncReplicate(Payment payment) {
-        replicateExecutor.submit(() -> {
-            try {
-                peerReplicator.replicate(payment);
-            } catch (Exception ignored) {
-                // opcional: log/metrics de falha de replicação
-            }
-        });
+    private long truncateToMinute(Instant instant) {
+        return instant.getEpochSecond() / 60;
+    }
+
+    private Instant parseDate(String date) {
+        if (date == null) return Instant.now();
+        try {
+            return Instant.parse(date);
+        } catch (DateTimeParseException e) {
+            return Instant.now();
+        }
+    }
+
+    private long toCents(BigDecimal amount) {
+        return amount.movePointRight(2).longValue();
+    }
+
+    private BigDecimal centsToBigDecimal(long cents) {
+        return BigDecimal.valueOf(cents, 2);
+    }
+
+    private static class PaymentSummary {
+        private final long totalCount;
+        private final long totalAmountCents;
+
+        public PaymentSummary(long totalCount, long totalAmountCents) {
+            this.totalCount = totalCount;
+            this.totalAmountCents = totalAmountCents;
+        }
+
+        public long getTotalCount() {
+            return totalCount;
+        }
+
+        public long getTotalAmountCents() {
+            return totalAmountCents;
+        }
+    }
+
+    private static class MinuteBucket {
+        private final LongAdder count = new LongAdder();
+        private final LongAdder totalCents = new LongAdder();
+
+        public void add(BigDecimal amount) {
+            count.increment();
+            totalCents.add(amount.movePointRight(2).longValue());
+        }
+
+        public long getCount() {
+            return count.sum();
+        }
+
+        public long getTotalCents() {
+            return totalCents.sum();
+        }
     }
 }
-
-
