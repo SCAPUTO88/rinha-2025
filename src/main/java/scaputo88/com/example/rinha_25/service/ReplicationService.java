@@ -1,7 +1,5 @@
 package scaputo88.com.example.rinha_25.service;
 
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -12,6 +10,7 @@ import scaputo88.com.example.rinha_25.model.Payment;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 @Service
@@ -21,7 +20,10 @@ public class ReplicationService {
 
     private final RestClient restClient;
     private final List<String> peers;
-    private final Cache<UUID, Boolean> recentlyReplicated;
+
+    // Dedupe simples com TTL: armazena timestamp (millis) da última replicação por ID
+    private final ConcurrentHashMap<UUID, Long> recentlyReplicated;
+    private final long dedupeTtlMillis;
 
     private final ExecutorService replicateExecutor;
 
@@ -43,10 +45,8 @@ public class ReplicationService {
 
         this.peers = parsePeers(peersCsv);
 
-        this.recentlyReplicated = CacheBuilder.newBuilder()
-                .expireAfterWrite(dedupeTtlSeconds, TimeUnit.SECONDS)
-                .concurrencyLevel(Runtime.getRuntime().availableProcessors())
-                .build();
+        this.dedupeTtlMillis = Math.max(1000L, dedupeTtlSeconds * 1000L);
+        this.recentlyReplicated = new ConcurrentHashMap<>();
 
         int threads = Math.max(1, replicateThreads);
         this.replicateExecutor = new ThreadPoolExecutor(
@@ -75,12 +75,12 @@ public class ReplicationService {
 
         UUID id = payment.getCorrelationId();
 
-        if (recentlyReplicated.getIfPresent(id) != null) {
+        if (isRecentlyReplicated(id)) {
             log.debug("Skipping duplicate replication for {}", id);
             return;
         }
 
-        recentlyReplicated.put(id, Boolean.TRUE);
+        markReplicatedNow(id);
 
         for (String peer : peers) {
             replicateExecutor.submit(() -> {
@@ -104,7 +104,33 @@ public class ReplicationService {
     }
 
     public boolean isRecentlyReplicated(UUID id) {
-        return recentlyReplicated.getIfPresent(id) != null;
+        Long ts = recentlyReplicated.get(id);
+        long now = System.currentTimeMillis();
+        if (ts == null) return false;
+        if (now - ts > dedupeTtlMillis) {
+            // expirou: remove e considera não recente
+            recentlyReplicated.remove(id, ts);
+            return false;
+        }
+        return true;
+    }
+
+    private void markReplicatedNow(UUID id) {
+        long now = System.currentTimeMillis();
+        recentlyReplicated.put(id, now);
+        // limpeza ocasional e best-effort para não crescer sem limite
+        if (recentlyReplicated.size() > 10000) {
+            cleanupExpired(now);
+        }
+    }
+
+    private void cleanupExpired(long now) {
+        for (Map.Entry<UUID, Long> e : recentlyReplicated.entrySet()) {
+            Long ts = e.getValue();
+            if (ts == null || now - ts > dedupeTtlMillis) {
+                recentlyReplicated.remove(e.getKey(), ts);
+            }
+        }
     }
 
     private static List<String> parsePeers(String csv) {
@@ -120,5 +146,3 @@ public class ReplicationService {
         return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
     }
 }
-
-

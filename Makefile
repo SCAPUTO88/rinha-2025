@@ -1,5 +1,5 @@
 # Configurações
-VERSION ?= 1.0.5
+VERSION ?= 1.0.6
 IMAGE ?= scaputo88/rinha-2025
 BRANCH ?= main
 
