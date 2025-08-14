@@ -68,12 +68,12 @@ public class ReplicationService {
     }
 
     public void replicate(Payment payment) {
-        if (payment == null || payment.correlationId() == null) {
+        if (payment == null || payment.getCorrelationId() == null) {
             log.warn("Skipping replication: payment or correlationId is null");
             return;
         }
 
-        UUID id = payment.correlationId();
+        UUID id = payment.getCorrelationId();
 
         if (recentlyReplicated.getIfPresent(id) != null) {
             log.debug("Skipping duplicate replication for {}", id);

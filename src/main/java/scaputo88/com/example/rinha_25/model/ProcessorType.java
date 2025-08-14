@@ -5,7 +5,7 @@ public enum ProcessorType {
     DEFAULT("default"),
     FALLBACK("fallback");
 
-    private final String value;
+    public final String value;
 
     ProcessorType(String value) {
         this.value = value;
