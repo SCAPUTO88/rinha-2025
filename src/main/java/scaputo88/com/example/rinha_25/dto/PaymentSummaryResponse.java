@@ -1,58 +1,64 @@
 package scaputo88.com.example.rinha_25.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import scaputo88.com.example.rinha_25.model.ProcessorType;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.math.BigDecimal;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public final class PaymentSummaryResponse {
+public class PaymentSummaryResponse {
+    
+    @JsonProperty("default")
+    private final ProcessorSummary defaultSummary;
+    
+    @JsonProperty("fallback")
+    private final ProcessorSummary fallbackSummary;
 
-    private ProcessorType type;
-    private long totalRequests;
-    private BigDecimal totalAmount;
-
-    public PaymentSummaryResponse() {
-        this(null, 0L, BigDecimal.ZERO);
+    public PaymentSummaryResponse(ProcessorSummary defaultSummary, ProcessorSummary fallbackSummary) {
+        this.defaultSummary = defaultSummary != null ? defaultSummary : new ProcessorSummary();
+        this.fallbackSummary = fallbackSummary != null ? fallbackSummary : new ProcessorSummary();
     }
 
-    public PaymentSummaryResponse(ProcessorType type, long totalRequests, BigDecimal totalAmount) {
-        this.type = type;
-        this.totalRequests = totalRequests;
-        this.totalAmount = (totalAmount != null ? totalAmount : BigDecimal.ZERO);
+    public static class ProcessorSummary {
+        private final long totalRequests;
+        private final double totalAmount;
+
+        public ProcessorSummary() {
+            this(0, BigDecimal.ZERO);
+        }
+
+        public ProcessorSummary(long totalRequests, BigDecimal totalAmount) {
+            this.totalRequests = totalRequests;
+            this.totalAmount = totalAmount != null ? totalAmount.doubleValue() : 0.0;
+        }
+
+        @JsonProperty("totalRequests")
+        public long getTotalRequests() {
+            return totalRequests;
+        }
+
+        @JsonProperty("totalAmount")
+        public double getTotalAmount() {
+            return totalAmount;
+        }
+
+        @Override
+        public String toString() {
+            return "{\"totalRequests\":" + totalRequests + ",\"totalAmount\":" + totalAmount + "}";
+        }
     }
 
-    public ProcessorType getType() {
-        return type;
+    // Getters for JSON serialization
+    public ProcessorSummary getDefault() {
+        return defaultSummary;
     }
 
-    public void setType(ProcessorType type) {
-        this.type = type;
-    }
-
-    public long getTotalRequests() {
-        return totalRequests;
-    }
-
-    public void setTotalRequests(long totalRequests) {
-        this.totalRequests = totalRequests;
-    }
-
-    public BigDecimal getTotalAmount() {
-        return totalAmount;
-    }
-
-    public void setTotalAmount(BigDecimal totalAmount) {
-        this.totalAmount = (totalAmount != null ? totalAmount : BigDecimal.ZERO);
+    public ProcessorSummary getFallback() {
+        return fallbackSummary;
     }
 
     @Override
     public String toString() {
-        return "PaymentSummaryResponse{" +
-                "type=" + type +
-                ", totalRequests=" + totalRequests +
-                ", totalAmount=" + totalAmount +
-                '}';
+        return "{\"default\":" + defaultSummary + ",\"fallback\":" + fallbackSummary + "}";
     }
 }
-

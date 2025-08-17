@@ -9,11 +9,8 @@ import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
-import scaputo88.com.example.rinha_25.metrics.ErrorMetrics;
 
 import java.math.BigDecimal;
-import java.net.ConnectException;
-import java.net.SocketTimeoutException;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
@@ -22,16 +19,13 @@ import java.util.UUID;
 public class ProcessorClient {
 
     private RestTemplate restTemplate;
-    private final ErrorMetrics errorMetrics;
     private static final Logger log = LoggerFactory.getLogger(ProcessorClient.class);
 
     private final String defaultBaseUrl;
     private final String fallbackBaseUrl;
     private final String ADMIN_TOKEN = envOr("PP_ADMIN_TOKEN", "123");
 
-    public ProcessorClient(ErrorMetrics errorMetrics) {
-        this.errorMetrics = errorMetrics;
-
+    public ProcessorClient() {
         int timeoutMs = envOrInt("PP_TIMEOUT_MS", 600);
         this.restTemplate = buildRestTemplate(timeoutMs);
 
@@ -62,21 +56,12 @@ public class ProcessorClient {
             log.info("[ProcessorClient] POST /payments status {}", resp.getStatusCode());
             return resp.getStatusCode().is2xxSuccessful();
         } catch (ResourceAccessException e) {
-            if (e.getCause() instanceof SocketTimeoutException) {
-                errorMetrics.increment(ErrorMetrics.ErrorType.TIMEOUT);
-            } else if (e.getCause() instanceof ConnectException) {
-                errorMetrics.increment(ErrorMetrics.ErrorType.CONNECTION_REFUSED);
-            } else {
-                errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
-            }
             log.warn("[ProcessorClient] ERRO POST /payments: {}", e.getMessage());
             return false;
         } catch (HttpServerErrorException e) {
-            errorMetrics.increment(ErrorMetrics.ErrorType.SERVER_ERROR);
             log.warn("[ProcessorClient] 5xx POST /payments: {}", e.getStatusCode());
             return false;
         } catch (RestClientException e) {
-            errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
             log.warn("[ProcessorClient] ERRO POST /payments: {}", e.getMessage());
             return false;
         }
@@ -93,21 +78,12 @@ public class ProcessorClient {
                     : Integer.MAX_VALUE;
             return new HealthStatus(!failing, minResponseTime);
         } catch (ResourceAccessException e) {
-            if (e.getCause() instanceof SocketTimeoutException) {
-                errorMetrics.increment(ErrorMetrics.ErrorType.TIMEOUT);
-            } else if (e.getCause() instanceof ConnectException) {
-                errorMetrics.increment(ErrorMetrics.ErrorType.CONNECTION_REFUSED);
-            } else {
-                errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
-            }
             log.warn("[ProcessorClient] ERRO /service-health: {}", e.getMessage());
             return new HealthStatus(false, Integer.MAX_VALUE);
         } catch (HttpServerErrorException e) {
-            errorMetrics.increment(ErrorMetrics.ErrorType.SERVER_ERROR);
             log.warn("[ProcessorClient] 5xx /service-health: {}", e.getStatusCode());
             return new HealthStatus(false, Integer.MAX_VALUE);
         } catch (RestClientException e) {
-            errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
             log.warn("[ProcessorClient] ERRO /service-health: {}", e.getMessage());
             return new HealthStatus(false, Integer.MAX_VALUE);
         }
@@ -139,21 +115,12 @@ public class ProcessorClient {
                     : BigDecimal.ZERO;
             return new AdminSummary(totalRequests, totalAmount);
         } catch (ResourceAccessException e) {
-            if (e.getCause() instanceof SocketTimeoutException) {
-                errorMetrics.increment(ErrorMetrics.ErrorType.TIMEOUT);
-            } else if (e.getCause() instanceof ConnectException) {
-                errorMetrics.increment(ErrorMetrics.ErrorType.CONNECTION_REFUSED);
-            } else {
-                errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
-            }
             log.warn("[ProcessorClient] ERRO /admin/payments-summary: {}", e.getMessage());
             return new AdminSummary(0L, BigDecimal.ZERO);
         } catch (HttpServerErrorException e) {
-            errorMetrics.increment(ErrorMetrics.ErrorType.SERVER_ERROR);
             log.warn("[ProcessorClient] 5xx /admin/payments-summary: {}", e.getStatusCode());
             return new AdminSummary(0L, BigDecimal.ZERO);
         } catch (RestClientException e) {
-            errorMetrics.increment(ErrorMetrics.ErrorType.UNKNOWN);
             log.warn("[ProcessorClient] ERRO /admin/payments-summary: {}", e.getMessage());
             return new AdminSummary(0L, BigDecimal.ZERO);
         }

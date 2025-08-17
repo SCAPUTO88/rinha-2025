@@ -68,20 +68,27 @@ public class PaymentService {
         return Optional.ofNullable(payments.get(id));
     }
 
-    public List<PaymentSummaryResponse> getSummaryResponse(String from, String to) {
-        List<PaymentSummaryResponse> summaries = new ArrayList<>();
-        for (ProcessorType type : ProcessorType.values()) {
-            PaymentSummary summary = (from == null && to == null)
-                    ? getSummary(type)
-                    : getSummary(type, from, to);
-
-            summaries.add(new PaymentSummaryResponse(
-                    type,
-                    summary.getTotalCount(),
-                    centsToBigDecimal(summary.getTotalAmountCents())
-            ));
-        }
-        return summaries;
+    public PaymentSummaryResponse getSummaryResponse(String from, String to) {
+        // Get default processor summary
+        PaymentSummary defaultSummary = (from == null && to == null)
+                ? getSummary(ProcessorType.DEFAULT)
+                : getSummary(ProcessorType.DEFAULT, from, to);
+        
+        // Get fallback processor summary
+        PaymentSummary fallbackSummary = (from == null && to == null)
+                ? getSummary(ProcessorType.FALLBACK)
+                : getSummary(ProcessorType.FALLBACK, from, to);
+        
+        return new PaymentSummaryResponse(
+            new PaymentSummaryResponse.ProcessorSummary(
+                defaultSummary.getTotalCount(),
+                centsToBigDecimal(defaultSummary.getTotalAmountCents())
+            ),
+            new PaymentSummaryResponse.ProcessorSummary(
+                fallbackSummary.getTotalCount(),
+                centsToBigDecimal(fallbackSummary.getTotalAmountCents())
+            )
+        );
     }
 
     private PaymentSummary getSummary(ProcessorType type) {
