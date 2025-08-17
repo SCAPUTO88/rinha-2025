@@ -14,7 +14,6 @@ import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
-import scaputo88.com.example.rinha_25.metrics.ErrorMetrics;
 
 import java.math.BigDecimal;
 import java.net.ConnectException;
@@ -33,14 +32,11 @@ class ProcessorClientTest {
     @Mock
     RestTemplate restTemplate;
 
-    @Mock
-    ErrorMetrics errorMetrics;
-
     ProcessorClient client;
 
     @BeforeEach
     void setUp() {
-        client = new ProcessorClient(errorMetrics);
+        client = new ProcessorClient();
         ReflectionTestUtils.setField(client, "restTemplate", restTemplate);
     }
 
@@ -54,7 +50,6 @@ class ProcessorClientTest {
         boolean ok = client.sendPayment("default", id, BigDecimal.TEN);
 
         assertTrue(ok);
-        verify(errorMetrics, never()).increment(any());
     }
 
     @Test
@@ -66,7 +61,6 @@ class ProcessorClientTest {
         boolean ok = client.sendPayment("fallback", id, BigDecimal.ONE);
 
         assertFalse(ok);
-        verify(errorMetrics).increment(ErrorMetrics.ErrorType.TIMEOUT);
     }
 
     @Test
@@ -78,7 +72,6 @@ class ProcessorClientTest {
         boolean ok = client.sendPayment("default", id, BigDecimal.ONE);
 
         assertFalse(ok);
-        verify(errorMetrics).increment(ErrorMetrics.ErrorType.CONNECTION_REFUSED);
     }
 
     @Test
@@ -90,7 +83,6 @@ class ProcessorClientTest {
         boolean ok = client.sendPayment("default", id, BigDecimal.ONE);
 
         assertFalse(ok);
-        verify(errorMetrics).increment(ErrorMetrics.ErrorType.SERVER_ERROR);
     }
 
     @Test
@@ -102,7 +94,6 @@ class ProcessorClientTest {
         boolean ok = client.sendPayment("fallback", id, BigDecimal.ONE);
 
         assertFalse(ok);
-        verify(errorMetrics).increment(ErrorMetrics.ErrorType.UNKNOWN);
     }
 
 
@@ -116,7 +107,6 @@ class ProcessorClientTest {
 
         assertTrue(hs.healthy());
         assertEquals(12, hs.minResponseTime());
-        verify(errorMetrics, never()).increment(any());
     }
 
     @Test
@@ -128,7 +118,6 @@ class ProcessorClientTest {
 
         assertFalse(hs.healthy());
         assertEquals(Integer.MAX_VALUE, hs.minResponseTime());
-        verify(errorMetrics).increment(ErrorMetrics.ErrorType.TIMEOUT);
     }
 
     @Test
@@ -139,7 +128,6 @@ class ProcessorClientTest {
         ProcessorClient.HealthStatus hs = client.checkHealth("default");
 
         assertFalse(hs.healthy());
-        verify(errorMetrics).increment(ErrorMetrics.ErrorType.SERVER_ERROR);
     }
 
 
@@ -157,7 +145,6 @@ class ProcessorClientTest {
 
         assertEquals(3L, s.totalRequests());
         assertEquals(new BigDecimal("42.50"), s.totalAmount());
-        verify(errorMetrics, never()).increment(any());
     }
 
     @Test
@@ -169,6 +156,5 @@ class ProcessorClientTest {
 
         assertEquals(0L, s.totalRequests());
         assertEquals(BigDecimal.ZERO, s.totalAmount());
-        verify(errorMetrics).increment(ErrorMetrics.ErrorType.CONNECTION_REFUSED);
     }
 }

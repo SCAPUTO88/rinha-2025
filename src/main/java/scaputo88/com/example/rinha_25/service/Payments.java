@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import scaputo88.com.example.rinha_25.dto.PaymentSummaryResponse;
+import scaputo88.com.example.rinha_25.dto.TotalSummaryResponse;
 import scaputo88.com.example.rinha_25.model.Payment;
 import scaputo88.com.example.rinha_25.model.ProcessorType;
 
@@ -57,6 +58,8 @@ public class Payments {
     private final List<String> peers;
     private final ExecutorService replicatorPool;
     private final RestTemplate replicateClient;
+
+    private volatile boolean shutdownRequested = false;
 
     public Payments(ProcessorClient processorClient) {
         this.processorClient = processorClient;
@@ -120,7 +123,7 @@ public class Payments {
     }
 
     private void runWorker() {
-        while (true) {
+        while (!shutdownRequested) {
             try {
                 Payment p = queue.poll(200, TimeUnit.MILLISECONDS);
                 if (p == null) continue;
@@ -134,12 +137,13 @@ public class Payments {
                 }
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
-                return;
+                break;
             } catch (Exception e) {
                 // Nunca deixar o worker morrer
                 log.warn("[Payments] erro no worker: {}", e.getMessage());
             }
         }
+        log.info("Worker thread finalizada");
     }
 
     private void replicateAsync(Payment p) {
@@ -176,19 +180,17 @@ public class Payments {
         return offered;
     }
 
-    public List<PaymentSummaryResponse> getSummary(String from, String to) {
-        List<PaymentSummaryResponse> summaries = new ArrayList<>();
+    public TotalSummaryResponse getTotalSummary(String from, String to) {
+        long totalCount = 0;
+        long totalCents = 0;
         for (ProcessorType type : ProcessorType.values()) {
-            PaymentSummary summary = (from == null && to == null)
+            PaymentSummary s = (from == null && to == null)
                     ? getSummary(type)
                     : getSummary(type, from, to);
-            summaries.add(new PaymentSummaryResponse(
-                    type,
-                    summary.totalCount,
-                    centsToBigDecimal(summary.totalAmountCents)
-            ));
+            totalCount += s.totalCount;
+            totalCents += s.totalAmountCents;
         }
-        return summaries;
+        return new TotalSummaryResponse(totalCount, centsToBigDecimal(totalCents));
     }
 
     public ProcessorClient.HealthStatus getProcessorHealth(ProcessorType type) {
@@ -327,10 +329,11 @@ public class Payments {
 
     @PreDestroy
     void shutdown() {
+        shutdownRequested = true;
         if (replicatorPool != null) {
             replicatorPool.shutdown();
             try {
-                if (!replicatorPool.awaitTermination(500, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                if (!replicatorPool.awaitTermination(500, TimeUnit.MILLISECONDS)) {
                     replicatorPool.shutdownNow();
                 }
             } catch (InterruptedException e) {
@@ -338,5 +341,34 @@ public class Payments {
                 replicatorPool.shutdownNow();
             }
         }
+    }
+
+    public long getCount(ProcessorType type, String from, String to) {
+        PaymentSummary summary = (from == null && to == null)
+                ? getSummary(type)
+                : getSummary(type, from, to);
+        return summary.totalCount;
+    }
+
+    public BigDecimal getTotalAmount(ProcessorType type, String from, String to) {
+        PaymentSummary summary = (from == null && to == null)
+                ? getSummary(type)
+                : getSummary(type, from, to);
+        return centsToBigDecimal(summary.totalAmountCents);
+    }
+
+    public PaymentSummaryResponse getSummaryResponse(String from, String to) {
+        // Get default processor summary
+        long defaultCount = getCount(ProcessorType.DEFAULT, from, to);
+        BigDecimal defaultAmount = getTotalAmount(ProcessorType.DEFAULT, from, to);
+        
+        // Get fallback processor summary
+        long fallbackCount = getCount(ProcessorType.FALLBACK, from, to);
+        BigDecimal fallbackAmount = getTotalAmount(ProcessorType.FALLBACK, from, to);
+        
+        return new PaymentSummaryResponse(
+            new PaymentSummaryResponse.ProcessorSummary(defaultCount, defaultAmount),
+            new PaymentSummaryResponse.ProcessorSummary(fallbackCount, fallbackAmount)
+        );
     }
 }

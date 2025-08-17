@@ -1,6 +1,6 @@
 services:
   app1:
-    image: docker.io/scaputo88/rinha-2025:1.0.6
+    image: docker.io/scaputo88/rinha-2025:1.0.7
     container_name: rinha_app1
     networks:
       - payment-processor
@@ -20,7 +20,7 @@ services:
           memory: "120MB"
 
   app2:
-    image: docker.io/scaputo88/rinha-2025:1.0.6
+    image: docker.io/scaputo88/rinha-2025:1.0.7
     container_name: rinha_app2
     networks:
       - payment-processor

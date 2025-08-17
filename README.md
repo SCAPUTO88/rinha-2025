@@ -1,4 +1,4 @@
-# 🐳 Rinha Backend 2025
+# Rinha Backend 2025
 
 [![Docker Build & Push](https://github.com/scaputo88/rinha-2025/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/scaputo88/rinha-2025/actions)
 [![DockerHub](https://img.shields.io/badge/DockerHub-scaputo88%2Frinha--2025-blue)](https://hub.docker.com/r/scaputo88/rinha-2025)
@@ -7,7 +7,7 @@ Implementação Java para a **Rinha de Backend 2025** — enxuta, sem JPA/Metric
 
 ---
 
-## 🚀 Como rodar
+## Como rodar
 
 Pré-requisitos:
 - Docker e Docker Compose
@@ -20,7 +20,7 @@ docker network create payment-processor || true
 
 ### Usando as imagens publicadas (recomendado)
 
-As apps já estão referenciadas no `docker-compose.yml` como `scaputo88/rinha-2025:1.0.6`.
+As apps já estão referenciadas no `docker-compose.yml` como `scaputo88/rinha-2025:1.0.7`.
 
 ```bash
 docker compose pull
@@ -49,7 +49,7 @@ docker compose up -d
 
 ---
 
-## 🔧 Build & Publish (opcional)
+## Build & Publish (opcional)
 
 Se quiser construir e publicar sua própria imagem:
 
@@ -58,14 +58,14 @@ Se quiser construir e publicar sua própria imagem:
 docker login
 
 # Build e push para linux/amd64
-docker buildx build --platform linux/amd64 -t scaputo88/rinha-2025:1.0.6 --push .
+docker buildx build --platform linux/amd64 -t scaputo88/rinha-2025:1.0.7 --push .
 
 # (Opcional) latest
-docker tag scaputo88/rinha-2025:1.0.6 scaputo88/rinha-2025:latest
+docker tag scaputo88/rinha-2025:1.0.7 scaputo88/rinha-2025:latest
 docker push scaputo88/rinha-2025:latest
 ```
 
-Ou usando Makefile (já configurado com VERSION=1.0.6):
+Ou usando Makefile (já configurado com VERSION=1.0.7):
 ```bash
 make image-build
 make image-push
@@ -73,7 +73,7 @@ make image-push
 
 ---
 
-## 🔌 Endpoints
+## Endpoints
 
 - POST `/payments`
   - Body: `{ correlationId: UUID, amount: string (ex: "10.00"), processor: "DEFAULT"|"FALLBACK" }`
@@ -87,7 +87,7 @@ make image-push
 
 ---
 
-## ⚙️ Variáveis de Ambiente (principais)
+## Variáveis de Ambiente (principais)
 
 - `PP_DEFAULT_URL` — URL do processor default (ex: `http://payment-processor-default:8080`)
 - `PP_FALLBACK_URL` — URL do processor fallback
@@ -100,7 +100,7 @@ make image-push
 
 ---
 
-## 🧱 Nginx
+## Nginx
 
 - O arquivo `nginx.conf` é montado como `/etc/nginx/conf.d/default.conf`.
 - Portanto, ele NÃO deve conter blocos `events {}` ou `http {}` — somente `upstream` e `server`.
@@ -108,7 +108,7 @@ make image-push
 
 ---
 
-## 📦 Stack
+## Stack
 
 - Java 17, Spring Boot Web (Undertow)
 - Armazenamento em memória com replicação entre instâncias
@@ -117,6 +117,6 @@ make image-push
 
 ---
 
-## ✅ Licença
+## Licença
 
 MIT

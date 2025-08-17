@@ -12,7 +12,6 @@ import scaputo88.com.example.rinha_25.model.ProcessorType;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -41,9 +40,9 @@ class PaymentServiceTest {
 
         payments.applyReplication(p);
 
-        PaymentSummaryResponse def = summaryForDefault();
-        assertEquals(1L, def.getTotalRequests());
-        assertEquals(new BigDecimal("10.00"), def.getTotalAmount());
+        PaymentSummaryResponse summary = payments.getSummaryResponse(null, null);
+        assertEquals(1L, summary.getDefault().getTotalRequests());
+        assertEquals(10.0, summary.getDefault().getTotalAmount());
     }
 
     @Test
@@ -55,9 +54,9 @@ class PaymentServiceTest {
         payments.applyReplication(p);
         payments.applyReplication(p); // repetido — deve ser ignorado
 
-        PaymentSummaryResponse def = summaryForDefault();
-        assertEquals(1L, def.getTotalRequests());
-        assertEquals(new BigDecimal("10.00"), def.getTotalAmount());
+        PaymentSummaryResponse summary = payments.getSummaryResponse(null, null);
+        assertEquals(1L, summary.getDefault().getTotalRequests());
+        assertEquals(10.0, summary.getDefault().getTotalAmount());
     }
 
     @Test
@@ -72,24 +71,9 @@ class PaymentServiceTest {
         String from = agora.minus(1, ChronoUnit.HOURS).toString();
         String to = agora.plus(1, ChronoUnit.HOURS).toString();
 
-        PaymentSummaryResponse defRange = summaryForDefault(from, to);
+        PaymentSummaryResponse summary = payments.getSummaryResponse(from, to);
 
-        assertEquals(1L, defRange.getTotalRequests());
-        // 1 real = 1.00
-        assertEquals(new BigDecimal("1.00"), defRange.getTotalAmount());
-    }
-
-    // Helpers
-
-    private PaymentSummaryResponse summaryForDefault() {
-        return summaryForDefault(null, null);
-    }
-
-    private PaymentSummaryResponse summaryForDefault(String from, String to) {
-        List<PaymentSummaryResponse> summaries = payments.getSummary(from, to);
-        return summaries.stream()
-                .filter(s -> s.getType() == ProcessorType.DEFAULT)
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("Resumo DEFAULT não encontrado"));
+        assertEquals(1L, summary.getDefault().getTotalRequests());
+        assertEquals(1.0, summary.getDefault().getTotalAmount());
     }
 }
