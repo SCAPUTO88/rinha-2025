@@ -1,12 +1,12 @@
 # Configurações
-VERSION ?= 1.0.7
+VERSION ?= 1.1.4
 IMAGE ?= scaputo88/rinha-2025
 BRANCH ?= main
 
 # Conveniências
 DC := docker compose
 
-.PHONY: help build up down logs ps image-build image-push release clean
+.PHONY: help build up down logs ps image-build image-push release clean pull restart logs-api smoke purge
 
 help:
 	@echo "Targets:"
@@ -19,6 +19,11 @@ help:
 	@echo "  image-push   - publica as tags no DockerHub"
 	@echo "  release      - builda, publica imagem e cria tag git v$(VERSION)"
 	@echo "  clean        - remove imagens dangling e cache"
+	@echo "  pull         - docker compose pull das imagens"
+	@echo "  restart      - reinicia nginx e backends"
+	@echo "  logs-api     - segue logs dos backends"
+	@echo "  smoke        - executa smoke test (health, um POST e summary)"
+	@echo "  purge        - limpa dados no Redis via endpoint /purge-payments"
 
 build:
 	$(DC) build
@@ -35,6 +40,15 @@ logs:
 ps:
 	$(DC) ps
 
+pull:
+	$(DC) pull
+
+restart:
+	$(DC) restart nginx backend-api-1 backend-api-2 || true
+
+logs-api:
+	$(DC) logs -f backend-api-1 backend-api-2
+
 image-build:
 	docker build -t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
 
@@ -48,3 +62,16 @@ release: image-build image-push
 
 clean:
 	docker image prune -f
+
+smoke:
+	@echo "==> Health"
+	curl -s http://localhost:9999/payments/service-health | jq . || true
+	@echo "==> POST /payments"
+	curl -s -X POST http://localhost:9999/payments \
+	  -H 'Content-Type: application/json' \
+	  -d '{"correlationId":"11111111-1111-1111-1111-111111111111","amount":19.9}' | jq . || true
+	@echo "==> GET /payments-summary"
+	curl -s 'http://localhost:9999/payments-summary' | jq . || true
+
+purge:
+	curl -s -X POST http://localhost:9999/purge-payments | jq . || true

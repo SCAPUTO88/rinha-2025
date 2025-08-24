@@ -85,8 +85,6 @@ public class PaymentQueue implements AutoCloseable {
         }
     }
 
-    // ----- Utilitários internos -----
-
     private int getEnvIntSafe(String key, int def) {
         String v = System.getenv(key);
         if (v == null) {
@@ -122,9 +120,6 @@ public class PaymentQueue implements AutoCloseable {
         }
     }
 
-    /**
-     * Política de rejeição que tenta enfileirar com timeout (backpressure).
-     */
     private static final class BlockOrLogPolicy implements RejectedExecutionHandler {
         private final BlockingQueue<Runnable> queue;
         private final int offerTimeoutMs;

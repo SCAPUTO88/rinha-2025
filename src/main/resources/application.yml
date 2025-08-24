@@ -4,3 +4,9 @@ spring:
   sql:
     init:
       mode: never
+
+redis:
+  socket:
+    path: /var/run/redis/redis.sock
+  timeout:
+    millis: 1000
