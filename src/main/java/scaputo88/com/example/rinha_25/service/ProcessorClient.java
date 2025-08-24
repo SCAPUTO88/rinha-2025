@@ -27,7 +27,7 @@ public class ProcessorClient {
     private final String adminToken;
 
     public ProcessorClient() {
-        int timeoutMs = envOrInt("PP_TIMEOUT_MS", 600);
+        int timeoutMs = envOrInt("PP_TIMEOUT_MS", 250);
         this.restTemplate = buildRestTemplate(timeoutMs);
 
         this.defaultBaseUrl  = envOr("PAYMENT_PROCESSOR_URL_DEFAULT",  "http://payment-processor-default:8080");
@@ -131,4 +131,3 @@ public class ProcessorClient {
     public record HealthStatus(boolean healthy, int minResponseTime) {}
     public record AdminSummary(long totalRequests, BigDecimal totalAmount) {}
 }
-

@@ -1,6 +1,6 @@
 services:
   backend-api-1: &api
-    image: docker.io/scaputo88/rinha-2025:1.1.2
+    image: docker.io/scaputo88/rinha-2025:1.1.5
     container_name: rinha_api-1
     restart: unless-stopped
     environment:

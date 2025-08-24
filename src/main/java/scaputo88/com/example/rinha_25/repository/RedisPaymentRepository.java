@@ -10,6 +10,7 @@ import scaputo88.com.example.rinha_25.model.PaymentSummary;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Set;
+import java.util.UUID;
 
 @Repository
 public class RedisPaymentRepository implements PaymentRepository {
@@ -33,13 +34,12 @@ public class RedisPaymentRepository implements PaymentRepository {
             incrementHash(prefix + "_total_requests", 1);
             incrementHash(prefix + "_total_amount", toDouble(payment.amount()));
             incrementHash(prefix + "_total_fee", toDouble(payment.fee()));
-
-            // Armazena pagamento no ZSET com timestamp como score
             String value = String.join("|",
                     payment.processorUsed(),
                     payment.amount() != null ? payment.amount().toString() : "0",
                     payment.fee() != null ? payment.fee().toString() : "0",
-                    String.valueOf(payment.usedFallback()));
+                    String.valueOf(payment.usedFallback()),
+                    UUID.randomUUID().toString());
             redisTemplate.opsForZSet().add(ZSET_KEY, value, payment.timestamp().toEpochMilli());
 
         } catch (Exception e) {
@@ -102,7 +102,6 @@ public class RedisPaymentRepository implements PaymentRepository {
         }
     }
 
-    // Helpers
     private void incrementHash(String field, double delta) {
         redisTemplate.opsForHash().increment(SUMMARY_KEY, field, delta);
     }
@@ -119,10 +118,3 @@ public class RedisPaymentRepository implements PaymentRepository {
         }
     }
 }
-
-
-
-
-
-
-

@@ -37,18 +37,15 @@ public class HealthCheckService {
         int ttl = currentTtls.get(type).get();
         Instant last = lastCheck.get(type);
 
-        // Se cache ainda é válido, retorna imediatamente
         if (last != null && !now.minusSeconds(ttl).isAfter(last)) {
             return cache.getOrDefault(type, new ProcessorClient.HealthStatus(false, Integer.MAX_VALUE));
         }
 
         ReentrantLock lock = locks.get(type);
         if (!lock.tryLock()) {
-            // Não bloquear: retorna cache atual
             return cache.getOrDefault(type, new ProcessorClient.HealthStatus(false, Integer.MAX_VALUE));
         }
         try {
-            // Revalida após adquirir o lock
             Instant last2 = lastCheck.get(type);
             int ttl2 = currentTtls.get(type).get();
             if (last2 == null || now.minusSeconds(ttl2).isAfter(last2)) {

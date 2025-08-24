@@ -1,8 +1,6 @@
 package scaputo88.com.example.rinha_25.model;
 
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-
 import java.math.BigDecimal;
 
 public record PaymentSummary(
