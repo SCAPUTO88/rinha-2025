@@ -2,62 +2,45 @@ package scaputo88.com.example.rinha_25.model;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.UUID;
 
 public class Payment {
-    private UUID correlationId;
-    private BigDecimal amount;
-    private Instant requestedAt;
-    private ProcessorType processor;
-    private boolean success;
+    private final String processorUsed;
+    private final BigDecimal amount;
+    private final BigDecimal fee;
+    private final Instant timestamp;
+    private final boolean usedFallback;
 
-    public Payment() {}
-
-    public Payment(UUID correlationId, BigDecimal amount, Instant requestedAt, ProcessorType processor, boolean success) {
-        this.correlationId = correlationId;
+    public Payment(String processorUsed,
+                   BigDecimal amount,
+                   BigDecimal fee,
+                   Instant timestamp,
+                   boolean usedFallback) {
+        this.processorUsed = processorUsed;
         this.amount = amount;
-        this.requestedAt = requestedAt;
-        this.processor = processor;
-        this.success = success;
+        this.fee = fee;
+        this.timestamp = timestamp;
+        this.usedFallback = usedFallback;
     }
 
-    public UUID getCorrelationId() {
-        return correlationId;
+    public String processorUsed() {
+        return processorUsed;
     }
 
-    public void setCorrelationId(UUID correlationId) {
-        this.correlationId = correlationId;
-    }
-
-    public BigDecimal getAmount() {
+    public BigDecimal amount() {
         return amount;
     }
 
-    public void setAmount(BigDecimal amount) {
-        this.amount = amount;
+    public BigDecimal fee() {
+        return fee;
     }
 
-    public Instant getRequestedAt() {
-        return requestedAt;
+    public Instant timestamp() {
+        return timestamp;
     }
 
-    public void setRequestedAt(Instant requestedAt) {
-        this.requestedAt = requestedAt;
-    }
-
-    public ProcessorType getProcessor() {
-        return processor;
-    }
-
-    public void setProcessor(ProcessorType processor) {
-        this.processor = processor;
-    }
-
-    public boolean isSuccess() {
-        return success;
-    }
-
-    public void setSuccess(boolean success) {
-        this.success = success;
+    public boolean usedFallback() {
+        return usedFallback;
     }
 }
+
+
