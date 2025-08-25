@@ -1,8 +1,10 @@
 package scaputo88.com.example.rinha_25.model;
 
+import java.math.BigDecimal;
+
 public class PaymentRequest {
     private String correlationId;
-    private double amount;
+    private BigDecimal amount;
 
     public String getCorrelationId() {
         return correlationId;
@@ -12,15 +14,11 @@ public class PaymentRequest {
         this.correlationId = correlationId;
     }
 
-    public double getAmount() {
+    public BigDecimal getAmount() {
         return amount;
     }
 
-    public void setAmount(double amount) {
+    public void setAmount(BigDecimal amount) {
         this.amount = amount;
     }
 }
-
-
-
-

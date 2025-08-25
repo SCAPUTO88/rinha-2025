@@ -50,11 +50,15 @@ public class ProcessorClient {
     }
 
     public boolean sendPayment(String processor, UUID correlationId, BigDecimal amount) {
+        return sendPayment(processor, correlationId, amount, Instant.now());
+    }
+
+    public boolean sendPayment(String processor, UUID correlationId, BigDecimal amount, Instant requestedAt) {
         String url = baseUrl(processor) + "/payments";
         Map<String, Object> body = Map.of(
                 "correlationId", correlationId,
                 "amount", amount,
-                "requestedAt", Instant.now().toString()
+                "requestedAt", requestedAt.toString()
         );
         try {
             ResponseEntity<String> resp = restTemplate.postForEntity(url, body, String.class);

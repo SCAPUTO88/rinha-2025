@@ -29,18 +29,21 @@ public class RedisPaymentRepository implements PaymentRepository {
     @Override
     public void save(Payment payment) {
         try {
-            String prefix = payment.processorUsed();
-
-            incrementHash(prefix + "_total_requests", 1);
-            incrementHash(prefix + "_total_amount", toDouble(payment.amount()));
-            incrementHash(prefix + "_total_fee", toDouble(payment.fee()));
-            String value = String.join("|",
+            String member = String.join("|",
                     payment.processorUsed(),
                     payment.amount() != null ? payment.amount().toString() : "0",
                     payment.fee() != null ? payment.fee().toString() : "0",
                     String.valueOf(payment.usedFallback()),
-                    UUID.randomUUID().toString());
-            redisTemplate.opsForZSet().add(ZSET_KEY, value, payment.timestamp().toEpochMilli());
+                    payment.correlationId() != null ? payment.correlationId().toString() : UUID.randomUUID().toString()
+            );
+
+            Boolean added = redisTemplate.opsForZSet().addIfAbsent(ZSET_KEY, member, payment.timestamp().toEpochMilli());
+            if (Boolean.TRUE.equals(added)) {
+                String prefix = payment.processorUsed();
+                incrementHash(prefix + "_total_requests", 1);
+                incrementHash(prefix + "_total_amount", toDouble(payment.amount()));
+                incrementHash(prefix + "_total_fee", toDouble(payment.fee()));
+            }
 
         } catch (Exception e) {
             log.error("Erro ao salvar pagamento no Redis: {}", e.getMessage(), e);
@@ -66,12 +69,11 @@ public class RedisPaymentRepository implements PaymentRepository {
             if (results != null) {
                 for (String r : results) {
                     String[] parts = r.split("\\|");
-                    if (parts.length < 4) continue;
+                    if (parts.length < 5) continue;
 
                     String proc = parts[0];
                     BigDecimal amount = safeBigDecimal(parts[1]);
                     BigDecimal fee = safeBigDecimal(parts[2]);
-                    boolean fallback = Boolean.parseBoolean(parts[3]);
 
                     if ("default".equalsIgnoreCase(proc)) {
                         defRequests++;
