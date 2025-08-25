@@ -9,14 +9,12 @@ import scaputo88.com.example.rinha_25.model.PaymentSummary;
 import scaputo88.com.example.rinha_25.repository.PaymentRepository;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * Service responsible for processing payments.
- */
 @Service
 public class PaymentService {
 
@@ -37,35 +35,53 @@ public class PaymentService {
         asyncPool.submit(() -> {
             Instant now = Instant.now();
             UUID correlationId = UUID.fromString(request.getCorrelationId());
-            BigDecimal amount = BigDecimal.valueOf(request.getAmount());
+            BigDecimal amount = request.getAmount();
+            if (amount == null) {
+                log.warn("Pagamento {} ignorado: amount nulo", correlationId);
+                return;
+            }
 
             log.debug("Iniciando processamento do pagamento {} no valor de R${}", correlationId, amount);
 
-            boolean success = processorClient.sendPayment("default", correlationId, amount);
-            String processorUsed = "default";
+            boolean success = processorClient.sendPayment("default", correlationId, amount, now);
+            String processorUsed = null;
 
-            if (!success) {
+            if (success) {
+                processorUsed = "default";
+            } else {
                 log.warn("Processor default falhou, tentando fallback...");
-                success = processorClient.sendPayment("fallback", correlationId, amount);
-                processorUsed = "fallback";
+                success = processorClient.sendPayment("fallback", correlationId, amount, now);
+                if (success) {
+                    processorUsed = "fallback";
+                }
             }
 
-            Payment payment = new Payment(
-                    processorUsed,
-                    amount,
-                    amount.multiply(BigDecimal.valueOf(0.05)),
-                    now,
-                    processorUsed.equals("fallback")
-            );
+            if (success && processorUsed != null) {
+                BigDecimal fee = "fallback".equals(processorUsed)
+                        ? amount.multiply(BigDecimal.valueOf(0.15))
+                        : amount.multiply(BigDecimal.valueOf(0.05));
+                fee = fee.setScale(2, RoundingMode.DOWN);
 
-            try {
-                redisRepo.save(payment);
-            } catch (Exception e) {
-                log.error("Falha ao salvar pagamento no Redis: {}", e.getMessage(), e);
+                Payment payment = new Payment(
+                        correlationId,
+                        processorUsed,
+                        amount,
+                        fee,
+                        now,
+                        "fallback".equals(processorUsed)
+                );
+
+                try {
+                    redisRepo.save(payment);
+                } catch (Exception e) {
+                    log.error("Falha ao salvar pagamento no Redis: {}", e.getMessage(), e);
+                }
+            } else {
+                log.debug("Pagamento {} não persistido (sem sucesso em default/fallback)", correlationId);
             }
 
-            log.debug("Pagamento {} processado via {}, valor R${}, sucesso: {}",
-                    correlationId, processorUsed, amount, success);
+            log.debug("Pagamento {} via {}, valor R${}, sucesso: {}",
+                    correlationId, processorUsed != null ? processorUsed : "none", amount, success);
         });
     }
 
